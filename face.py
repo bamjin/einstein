@@ -1,8 +1,9 @@
-#!/usr/bin/python3
+#!/usr/bin/python3.5
 
 import sys
 import os
 import time
+import asyncio
 import telepot
 import json
 import requests
@@ -18,26 +19,25 @@ import urllib.request
 import matplotlib.pyplot as plt
 
 from urllib import parse
-from apscheduler.schedulers.background import BackgroundScheduler
-from telepot.delegate import per_chat_id, create_open, pave_event_space
+from telepot.aio.loop import MessageLoop
+from telepot.aio.delegate import pave_event_space, per_chat_id, create_open
 
 
 
 CONFIG_FILE = 'setting.json'
 
-class einstein(telepot.helper.ChatHandler):
+class einstein(telepot.aio.helper.ChatHandler):
 
 	GREETING = "사진을 한장씩 보내주세요 :-)"
 
-	global scheduler
-
 	def __init__(self, *args, **kwargs):
 		super(einstein, self).__init__(*args, **kwargs)
+		self._count = 0	
 
-	def open(self, initial_msg, seed):
-		self.sender.sendMessage(self.GREETING)
+	async def open(self, initial_msg, seed):
+		await self.sender.sendMessage(self.GREETING)
 
-	def emotion(self):
+	async def emotion(self):
 		# Load raw image file into memory
 		pathToFileInDisk = './pic/file.jpg'
 		with open( pathToFileInDisk , 'rb' ) as f:
@@ -56,11 +56,11 @@ class einstein(telepot.helper.ChatHandler):
 			data8uint = np.fromstring( data, np.uint8 ) # Convert string to an unsigned int array
 			img = cv2.cvtColor( cv2.imdecode( data8uint, cv2.IMREAD_COLOR ), cv2.COLOR_BGR2RGB )
 			if len(result) < 1:
-				self.sender.sendMessage("얼굴이 검출되지 않았습니다.")
+				await self.sender.sendMessage("얼굴이 검출되지 않았습니다.")
 			else:
 				renderResultOnImage( result, img )
 				matplotlib.image.imsave('./pic/face.png', img)
-				self.sender.sendPhoto(open('./pic/face.png', 'rb'))
+				await self.sender.sendPhoto(open('./pic/face.png', 'rb'))
 				result.sort(key=lambda x: x["faceRectangle"]["left"])
 				for re in result:
 					anger = float(re['scores']['anger']) * 100
@@ -72,31 +72,32 @@ class einstein(telepot.helper.ChatHandler):
 					surprise = float(re['scores']['surprise']) * 100
 					happiness = float(re['scores']['happiness']) * 100
 
-					if len(result) > 1:
+					if len(result) == 1:
+						await self.sender.sendMessage("화: %f %%\n혐오: %f %%\n두려움: %f %%\n슬픔: %f %%\n경멸: %f %%\n중립: %f %%\n놀라움: %f %%\n행복: %f%%"
+												% (anger, disgust, fear, sadness, contempt, neutral, surprise, happiness))
+						return
+					else:
 						key = result.index(re) + 1
 						message = ("%d번 얼굴 \n화: %f %%\n혐오: %f %%\n두려움: %f %%\n슬픔: %f %%\n경멸: %f %%\n중립: %f %%\n놀라움: %f %%\n행복: %f%%"
 												% (key, anger, disgust, fear, sadness, contempt, neutral, surprise, happiness))
 						faces.append(message)
-					else:
-						self.sender.sendMessage("화: %f %%\n혐오: %f %%\n두려움: %f %%\n슬픔: %f %%\n경멸: %f %%\n중립: %f %%\n놀라움: %f %%\n행복: %f%%"
-											% (anger, disgust, fear, sadness, contempt, neutral, surprise, happiness))
+				
+				await self.sender.sendMessage("\n\n".join(faces))
 
-				self.sender.sendMessage("\n\n".join(faces))
-
-	def on_message(self, msg):
+	async def on_message(self, msg):
 		content_type, chat_type, chat_id= telepot.glance(msg)
 
 		if content_type is 'text':
-			self.sender.sendMessage("사진'만' 한장 보내주세요")
+			await self.sender.sendMessage("사진'만' 한장 보내주세요")
 			return
 
 		if content_type is 'photo':
-			self.sender.sendMessage("조금 기다려주세요....")
-			bot.download_file(msg['photo'][-1]['file_id'], './pic/file.jpg')
-			self.emotion()
+			await self.sender.sendMessage("조금 기다려주세요....")
+			await bot.download_file(msg['photo'][-1]['file_id'], './pic/file.jpg')
+			await self.emotion()
 			return
 
-	def on_close(self, exception):
+	async def on_close(self, exception):
 		pass
 
 def processRequest( json, data, headers, params ):
@@ -192,10 +193,14 @@ if not bool(config):
 	exit()
 
 getConfig(config)
-scheduler = BackgroundScheduler()
-scheduler.start()
-bot = telepot.DelegatorBot(TOKEN, [
+
+bot = telepot.aio.DelegatorBot(TOKEN, [
 	pave_event_space()
-	(per_chat_id(), create_open, einstein, timeout=120),
+	(per_chat_id(), create_open, einstein, timeout=10),
 ])
-bot.message_loop(run_forever='Listening...')
+
+loop = asyncio.get_event_loop()
+loop.create_task(MessageLoop(bot).run_forever())
+print("Listening...")
+
+loop.run_forever()
